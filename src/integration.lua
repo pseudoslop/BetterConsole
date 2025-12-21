@@ -35,6 +35,11 @@ setmetatable(M.ClearEntriesCommand, { __index = Command })
 function M.ClearEntriesCommand:execute(context)
     context.data_store:clear_entries()
 
+    local ConsoleReader = BetterConsole.ConsoleReader
+    if ConsoleReader and ConsoleReader.clear_native_console then
+        ConsoleReader.clear_native_console()
+    end
+
     context.display_entries = {}
     context.last_entry_count = INITIAL_COUNT
     context.last_total_added = INITIAL_COUNT
@@ -620,6 +625,13 @@ local function intercepted_d(...)
     local level = detect_log_level(message)
     local category, cleaned_message = extract_category(message)
 
+    local ConsoleReader = BetterConsole.ConsoleReader
+    if ConsoleReader and ConsoleReader.register_intercepted_entry then
+        ConsoleReader.register_intercepted_entry(level, category, cleaned_message)
+    elseif ConsoleReader and ConsoleReader.register_intercepted_line then
+        ConsoleReader.register_intercepted_line(message)
+    end
+
     if console_instance then
         console_instance.state_manager:mark_categories_dirty()
         console_instance:add_entry(level, category, cleaned_message, metadata)
@@ -665,7 +677,15 @@ local function intercepted_ml_debug(str)
     if console_instance and str ~= nil then
         ErrorHandler.try_catch(function()
             local message = tostring(str)
+
             local category, cleaned_message = extract_category(message)
+
+            local ConsoleReader = BetterConsole.ConsoleReader
+            if ConsoleReader and ConsoleReader.register_intercepted_entry then
+                ConsoleReader.register_intercepted_entry("DEBUG", category, cleaned_message)
+            elseif ConsoleReader and ConsoleReader.register_intercepted_line then
+                ConsoleReader.register_intercepted_line(message)
+            end
 
             console_instance.state_manager:mark_categories_dirty()
             console_instance:add_entry("DEBUG", category, cleaned_message)
@@ -677,7 +697,15 @@ local function intercepted_ml_error(str)
     if console_instance and str ~= nil then
         ErrorHandler.try_catch(function()
             local message = tostring(str)
+
             local category, cleaned_message = extract_category(message)
+
+            local ConsoleReader = BetterConsole.ConsoleReader
+            if ConsoleReader and ConsoleReader.register_intercepted_entry then
+                ConsoleReader.register_intercepted_entry("ERROR", category, cleaned_message)
+            elseif ConsoleReader and ConsoleReader.register_intercepted_line then
+                ConsoleReader.register_intercepted_line(message)
+            end
 
             console_instance.state_manager:mark_categories_dirty()
             console_instance:add_entry("ERROR", category, cleaned_message)
@@ -693,7 +721,15 @@ local function intercepted_ml_log(str)
     if console_instance and str ~= nil then
         ErrorHandler.try_catch(function()
             local message = tostring(str)
+
             local category, cleaned_message = extract_category(message)
+
+            local ConsoleReader = BetterConsole.ConsoleReader
+            if ConsoleReader and ConsoleReader.register_intercepted_entry then
+                ConsoleReader.register_intercepted_entry("INFO", category, cleaned_message)
+            elseif ConsoleReader and ConsoleReader.register_intercepted_line then
+                ConsoleReader.register_intercepted_line(message)
+            end
 
             console_instance.state_manager:mark_categories_dirty()
             console_instance:add_entry("INFO", category, cleaned_message, { status_bar = true })
@@ -713,6 +749,13 @@ local function intercepted_table_print(arg)
     if console_instance and type(arg) == "table" then
         ErrorHandler.try_catch(function()
             local message = serialize_value(arg)
+
+            local ConsoleReader = BetterConsole.ConsoleReader
+            if ConsoleReader and ConsoleReader.register_intercepted_entry then
+                ConsoleReader.register_intercepted_entry("DEBUG", "Table", message)
+            elseif ConsoleReader and ConsoleReader.register_intercepted_line then
+                ConsoleReader.register_intercepted_line(message)
+            end
 
             console_instance.state_manager:mark_categories_dirty()
             console_instance:add_entry("DEBUG", "Table", message)
@@ -760,6 +803,11 @@ function M.initialize(console)
         console_instance:add_entry("INFO", "Console", "BetterConsole initialized - all intercepts enabled")
     end
 end
+
+-- Export parsing functions for ConsoleReader to reuse
+M.extract_timestamp = extract_timestamp
+M.extract_category = extract_category
+M.detect_log_level = detect_log_level
 
 BetterConsole.Intercept = M
     Integration.Intercept = M

@@ -263,6 +263,11 @@ function M.initialize()
 
     Intercept.initialize(M.console)
 
+    local ConsoleReader = BetterConsole.ConsoleReader
+    if ConsoleReader and ConsoleReader.initialize then
+        ConsoleReader.initialize(M.console)
+    end
+
     if M.console and M.console.add_entry then
         M.console:add_entry("INFO", "Console", L("notify_initialized"))
     end
@@ -279,6 +284,11 @@ function M.onDraw()
     local target_visible = get_showconsole_flag()
     if target_visible ~= M.console.is_visible then
         M.set_visible(target_visible, { skip_original_call = true })
+    end
+
+    local ConsoleReader = BetterConsole.ConsoleReader
+    if ConsoleReader and ConsoleReader.poll then
+        ConsoleReader.poll()
     end
 
     if M.console.is_visible then
@@ -358,10 +368,8 @@ function _G.stresstest(count)
         local category = categories[math.random(1, #categories)]
         local message = messages[math.random(1, #messages)]
 
-        -- Add entry number to make each unique
         local full_message = string.format("[Entry %d/%d] %s", i, count, message)
 
-        -- Every 5th entry gets metadata
         local metadata = nil
         if i % 5 == 0 then
             metadata = {

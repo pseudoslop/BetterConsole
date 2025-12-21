@@ -24,9 +24,7 @@ local function normalize_path(path)
         return nil
     end
 
-    -- Convert forward slashes to backslashes
     path = path:gsub(alt_separator, path_separator)
-    -- Remove duplicate separators
     path = path:gsub(path_separator .. "+", path_separator)
     return path
 end

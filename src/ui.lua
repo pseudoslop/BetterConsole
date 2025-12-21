@@ -127,7 +127,11 @@ function M.render_window_chrome(self, should_be_open, callback)
         self.is_visible, window_open = GUI:Begin("BetterConsole##BetterConsole", should_be_open, self.window_flags)
 
         if not window_open and should_be_open then
-            self.is_visible = false
+            if BetterConsole.Init and BetterConsole.Init.set_visible then
+                BetterConsole.Init.set_visible(false)
+            else
+                self.is_visible = false
+            end
         end
 
         if self.is_visible then
@@ -244,8 +248,6 @@ end
 -- @param self table The window instance
 -- @param delta_time number Time since last frame (unused but available for future use)
 function M.render(self, delta_time)
-    -- Check if BetterConsole should be visible based on its own state
-    -- Don't depend solely on ml_gui.showconsole to avoid conflicts
     if not self.is_visible then
         return
     end
@@ -1137,16 +1139,13 @@ local M = {}
 
 -- Color definitions (RGBA format with values 0.0-1.0)
 M.Colors = {
-    -- Text colors
     TEXT_DEFAULT = { 1.0, 1.0, 1.0, 1.0 },
     TEXT_WARNING = { 1.0, 1.0, 0.0, 1.0 },
 
-    -- Secondary button colors
     BUTTON_SECONDARY = { 0.15, 0.15, 0.15, 1.0 },
     BUTTON_SECONDARY_HOVER = { 0.25, 0.25, 0.25, 1.0 },
     BUTTON_SECONDARY_ACTIVE = { 0.35, 0.35, 0.35, 1.0 },
 
-    -- Filter chip colors
     CHIP_SEARCH = { 0.2, 0.6, 0.8, 1.0 },
     CHIP_SEARCH_ALT = { 0.2, 0.4, 0.8, 1.0 },
     CHIP_SEARCH_HOVER = { 0.3, 0.5, 0.9, 1.0 },
@@ -1159,13 +1158,10 @@ M.Colors = {
 
 -- Style constants for layout and sizing
 M.Styles = {
-    -- Spacing between UI items (horizontal, vertical)
     ITEM_SPACING = { 8, 4 },
 
-    -- Minimum size for filter window (width, height)
     FILTER_WINDOW_MIN_SIZE = { 300, 570 },
 
-    -- Width of category dropdown in filters
     CATEGORY_DROPDOWN_WIDTH = 150,
 }
 

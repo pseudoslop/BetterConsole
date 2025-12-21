@@ -1062,7 +1062,6 @@ function M.extract_category(message)
         return DEFAULT_CATEGORY, message
     end
 
-    -- Try [Category] format
     local category, remaining = try_extract_pattern(message, "^%[([^%]]+)%]%s*(.*)$")
     if category then
         return M.normalize_category(category), remaining
