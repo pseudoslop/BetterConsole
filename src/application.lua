@@ -18,6 +18,8 @@ local CATEGORY_ALL = (Constants and Constants.Categories and Constants.Categorie
 local STATUS_DURATION_DEFAULT = (Constants and Constants.Notifications and Constants.Notifications.DEFAULT_DURATION) or 3
 local STATUS_DURATION_CLIPBOARD = (Constants and Constants.Notifications and Constants.Notifications.CLIPBOARD_DURATION) or 2
 local STATS_CACHE_INTERVAL_MS = (Constants and Constants.Time and Constants.Time.MS_PER_SECOND) or 1000
+local MS_PER_SECOND = (Constants and Constants.Time and Constants.Time.MS_PER_SECOND) or 1000
+local CATEGORY_PRUNE_INTERVAL_MS = 30000
 local DEFAULT_CUSTOM_PRESET_INDEX = (Constants and Constants.Filters and Constants.Filters.DEFAULT_CUSTOM_PRESET_INDEX) or 0
 local MEMORY_USAGE_SCALAR = 1024
 local EMPTY_SELECTION_MESSAGE = "No entries selected"
@@ -627,32 +629,59 @@ function M.ConsoleWindow:render_context_menu(entry, index)
     BetterConsole.ContextMenu.render_log_entry_menu(self, entry, index)
 end
 
--- Gets list of available categories from log entries
--- Returns cached list if categories haven't changed
--- @return array: Sorted array of category names with "All" first
-function M.ConsoleWindow:get_available_categories()
-    if self.cached_categories and #self.cached_categories > 1 and not self.state_manager:needs_categories_update() then
-        return self.cached_categories
-    end
-
+-- Rebuilds the category structures from the entries currently retained
+-- register_category keeps them current as entries arrive, so this exists only
+-- to drop categories whose entries have since rolled out of the store. It
+-- rewrites all three structures together; replacing cached_categories alone
+-- leaves category_set claiming a pruned category is still registered, after
+-- which register_category refuses to re-add it and it never reappears.
+function M.ConsoleWindow:rebuild_category_cache()
     local categories = { CATEGORY_ALL }
     local category_set = { [CATEGORY_ALL] = true }
 
     local entries = self.data_store:get_entries()
     if type(entries.iterate) == "function" then
-        for i, entry in entries:iterate() do
-            if entry and entry.category and not category_set[entry.category] then
-                table.insert(categories, entry.category)
-                category_set[entry.category] = true
+        for _, entry in entries:iterate() do
+            local category = entry and entry.category
+            if category and not category_set[category] then
+                categories[#categories + 1] = category
+                category_set[category] = true
             end
         end
     end
 
     table.sort(categories, category_sort_comparator)
 
+    local category_to_index = {}
+    for index, name in ipairs(categories) do
+        category_to_index[name] = index
+    end
+
     self.cached_categories = categories
-    self.state_manager:clear_categories_dirty()
-    return categories
+    self.category_set = category_set
+    self.category_to_index = category_to_index
+    self.last_category_prune = os.clock() * MS_PER_SECOND
+end
+
+-- Gets list of available categories from log entries
+-- A read, not a scan: register_category adds each new category as its first
+-- entry arrives, so the cache is already current. The full rebuild only prunes
+-- rolled-out categories and is rate limited, because it costs 13ms with a full
+-- store and every intercepted message marks the categories dirty, which had it
+-- running on every frame.
+-- @return array: Sorted array of category names with "All" first
+function M.ConsoleWindow:get_available_categories()
+    if self.state_manager:needs_categories_update() then
+        self.state_manager:clear_categories_dirty()
+
+        local now = os.clock() * MS_PER_SECOND
+        if not self.last_category_prune
+            or (now - self.last_category_prune) >= CATEGORY_PRUNE_INTERVAL_MS then
+            self:rebuild_category_cache()
+        end
+    end
+
+    return self.cached_categories
 end
 
 -- Clears all log entries from console
