@@ -958,6 +958,71 @@ function M.render_highlighted_text(text, search_text, cache, GUI)
     M.render_text_segments(segments, GUI)
 end
 
+-- Creates a coroutine that filters entries in time-budgeted slices
+-- Each resume returns (results, is_complete); results is the live accumulator,
+-- so it must not be retained across searches. Aborts if window.search_version
+-- advances past the version the coroutine was bound to.
+-- @param window table: ConsoleWindow instance owning the search
+-- @param entries table: Entry collection exposing iterate()
+-- @param search_text string: Search term, already stored in window.filters.search
+-- @param version number: Search version this coroutine is bound to
+-- @return thread: Coroutine yielding (results, is_complete)
+function M.create_search_coroutine(window, entries, search_text, version)
+    return coroutine.create(function()
+        local results = {}
+
+        if type(entries) ~= "table" or type(entries.iterate) ~= "function" then
+            return results, true
+        end
+
+        local Constants = Models.Constants
+        local FilterEvaluator = BetterConsole.FilterEvaluator
+        local max_results = Constants.Performance.MAX_DISPLAY_RESULTS
+        local max_time_ms = Constants.Performance.MAX_COROUTINE_TIME_MS
+        local ms_per_second = Constants.Time.MS_PER_SECOND
+        local search_config = { case_sensitive = window.search.case_sensitive }
+
+        FilterEvaluator.ensure_derived_maps(window.filters)
+        window:clear_selection()
+
+        local slice_start = os.clock() * ms_per_second
+
+        for _, entry in entries:iterate() do
+            if window.search_version ~= version then
+                return results, true
+            end
+
+            if entry and FilterEvaluator.evaluate_entry(entry, window.filters, search_config) then
+                results[#results + 1] = entry
+                window.partial_result_count = #results
+                if #results >= max_results then
+                    break
+                end
+            end
+
+            if (os.clock() * ms_per_second) - slice_start > max_time_ms then
+                coroutine.yield(results, false)
+                slice_start = os.clock() * ms_per_second
+            end
+        end
+
+        if window.selected_entry_for_metadata then
+            local still_shown = false
+            for _, entry in ipairs(results) do
+                if entry == window.selected_entry_for_metadata then
+                    still_shown = true
+                    break
+                end
+            end
+            if not still_shown then
+                window.selected_entry_for_metadata = nil
+            end
+        end
+
+        return results, true
+    end)
+end
+
 BetterConsole.Search = M
 Core.Search = M
 end
