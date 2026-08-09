@@ -336,6 +336,12 @@ function M.update_display_entries(self)
         self.data_store:flush_pending()
     end
 
+    -- Bounds how long the last autosaved lines can sit unflushed once logging
+    -- goes quiet; the write path itself only flushes when more entries arrive.
+    if self.export_manager and self.export_manager.flush_auto_save then
+        self.export_manager:flush_auto_save()
+    end
+
     local update_start = to_milliseconds(os.clock())
     local current_time = update_start
 
