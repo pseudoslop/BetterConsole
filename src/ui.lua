@@ -114,40 +114,55 @@ local MIN_PANEL_HEIGHT = 100
 -- @param callback function The function to execute when window is visible
 function M.render_window_chrome(self, should_be_open, callback)
     GUI:PushStyleVar(GUI.StyleVar_WindowMinSize, WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
-    local style_var_pushed = true
 
     if self.collapsed ~= nil then
         GUI:SetNextWindowCollapsed(self.collapsed, GUI.SetCond_Always)
         self.collapsed = nil
     end
 
-    local ErrorHandler = BetterConsole.ErrorHandler
-    local success, err = ErrorHandler.try_catch(function()
-        local window_open
-        self.is_visible, window_open = GUI:Begin("BetterConsole##BetterConsole", should_be_open, self.window_flags)
+    -- Begin has to be matched by End on every path, so the content callback
+    -- and the filter window each get their own pcall and the first failure is
+    -- re-raised only once the ImGui stack has been unwound. An error escaping
+    -- between Begin and End leaves the window stack unbalanced for the rest of
+    -- the frame. Reporting is left to the caller so there is one throttled
+    -- error path rather than a d() call every frame.
+    local visible, window_open
+    local began, begin_err = pcall(function()
+        visible, window_open = GUI:Begin("BetterConsole##BetterConsole", should_be_open, self.window_flags)
+    end)
 
-        if not window_open and should_be_open then
-            if BetterConsole.Init and BetterConsole.Init.set_visible then
-                BetterConsole.Init.set_visible(false)
-            else
-                self.is_visible = false
+    local failure = nil
+
+    if began then
+        self.is_visible = visible
+        if visible then
+            local ok, err = pcall(callback)
+            if not ok then
+                failure = err
             end
         end
-
-        if self.is_visible then
-            callback()
-        end
-
         GUI:End()
-        BetterConsole.FiltersWindow.render(self)
-    end, "render_window_chrome")
-
-    if style_var_pushed then
-        GUI:PopStyleVar(STYLE_VAR_COUNT)
+    else
+        failure = begin_err
     end
 
-    if not success then
-        d("Console render error: " .. tostring(err))
+    GUI:PopStyleVar(STYLE_VAR_COUNT)
+
+    if began and not window_open and should_be_open then
+        if BetterConsole.Init and BetterConsole.Init.set_visible then
+            BetterConsole.Init.set_visible(false)
+        else
+            self.is_visible = false
+        end
+    end
+
+    local filters_ok, filters_err = pcall(BetterConsole.FiltersWindow.render, self)
+    if not filters_ok and not failure then
+        failure = filters_err
+    end
+
+    if failure then
+        error(failure, 0)
     end
 end
 

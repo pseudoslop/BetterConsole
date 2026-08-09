@@ -132,6 +132,39 @@ local function call_original_show_console(argument, gui_override)
     end
 end
 
+local ERROR_REPORT_INTERVAL_SECONDS = 10
+local last_error_report = {}
+
+--- Runs a draw-path step under pcall, reporting failures at most once per
+-- ERROR_REPORT_INTERVAL_SECONDS per label so a fault that recurs every frame
+-- cannot flood the console. Uses raw pcall rather than ErrorHandler.try_catch
+-- because that reports through d(), which the intercept routes back into
+-- add_entry, and add_entry is one of the things that can fail here.
+-- @param label string Identifies the step in the reported message
+-- @param fn function The step to run
+-- @return boolean True if the step completed without error
+local function protected(label, fn)
+    local ok, err = pcall(fn)
+    if ok then
+        last_error_report[label] = nil
+        return true
+    end
+
+    local now = os.clock()
+    local last = last_error_report[label]
+    if not last or (now - last) >= ERROR_REPORT_INTERVAL_SECONDS then
+        last_error_report[label] = now
+        pcall(function()
+            if M.console and M.console.add_entry then
+                M.console:add_entry("ERROR", "Console",
+                    string.format("%s failed: %s", label, tostring(err)))
+            end
+        end)
+    end
+
+    return false
+end
+
 -- ============================================================================
 -- Public API Functions
 -- ============================================================================
@@ -286,13 +319,18 @@ function M.onDraw()
         M.set_visible(target_visible, { skip_original_call = true })
     end
 
+    -- Ingestion stays ahead of rendering so lines captured this frame are
+    -- visible in it, which is only safe because a poll fault can no longer
+    -- stop the render below.
     local ConsoleReader = BetterConsole.ConsoleReader
     if ConsoleReader and ConsoleReader.poll then
-        ConsoleReader.poll()
+        protected("Console reader poll", ConsoleReader.poll)
     end
 
     if M.console.is_visible then
-        M.console:render()
+        protected("Console render", function()
+            M.console:render()
+        end)
     end
 end
 
@@ -418,11 +456,11 @@ end
 -- Called every frame by Minion's Gameloop.Draw event
 function betterconsole_module.OnDrawHandler()
     if not M.console_intercept_installed then
-        install_console_intercept()
+        protected("Console intercept install", install_console_intercept)
     end
 
     if M.onDraw then
-        M.onDraw()
+        protected("Console draw", M.onDraw)
     end
 end
 
