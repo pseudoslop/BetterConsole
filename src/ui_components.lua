@@ -1207,6 +1207,38 @@ local M = {}
 -- Renders status bar with stats or temporary notification message
 -- Displays total entries, filtered count, memory, update time, and blocked messages
 -- @param window table: BetterConsole window instance with stats and notifications
+-- Appends native reader state to the status line
+-- "Native" is the count of lines the reader can currently see in Minion's own
+-- console, alongside the largest it has ever seen. The two converging and then
+-- holding while output continues is the signature of a bounded buffer that is
+-- rolling past the read position.
+-- @param status_text string: Status line built so far
+-- @return string: Status line with reader state appended
+local function append_reader_status(status_text)
+    local ConsoleReader = BetterConsole.ConsoleReader
+    if not (ConsoleReader and ConsoleReader.get_stats) then
+        return status_text
+    end
+
+    local reader = ConsoleReader.get_stats()
+    if not reader.enabled then
+        return status_text .. " | Reader: off"
+    end
+
+    status_text = status_text .. string.format(" | Native: %d/%d",
+        reader.native_line_count, reader.native_line_count_max)
+
+    if reader.backlog > 0 then
+        status_text = status_text .. string.format(" +%d", reader.backlog)
+    end
+
+    if reader.stalled then
+        status_text = status_text .. " STALLED"
+    end
+
+    return status_text
+end
+
 M.render = function(window)
     GUI:Separator()
 
@@ -1235,9 +1267,16 @@ M.render = function(window)
         if anti_spam_stats.total_blocked > 0 then
             status_text = status_text .. string.format(" | Blocked: %d", anti_spam_stats.total_blocked)
         end
+
+        status_text = append_reader_status(status_text)
     end
 
     GUI:Text(status_text)
+
+    local ConsoleReader = BetterConsole.ConsoleReader
+    if GUI:IsItemHovered() and ConsoleReader and ConsoleReader.get_stats_text then
+        GUI:SetTooltip(ConsoleReader.get_stats_text())
+    end
 end
 
 BetterConsole.StatusBar = M

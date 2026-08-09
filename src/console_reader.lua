@@ -32,6 +32,7 @@ local HASH_EVICTION_TARGET = math.floor(MAX_TRACKED_HASHES * 0.8)
 local MS_PER_SECOND = 1000
 local MAX_LINES_PER_POLL = 100
 local CLEANUP_INTERVAL_MS = 1000
+local STALL_POLL_THRESHOLD = 20
 local FNV_OFFSET_BASIS = 2166136261
 local FNV_PRIME = 16777619
 local HASH_MODULO = 2147483647
@@ -48,6 +49,20 @@ local state = {
     backfill_completed = false,
     is_enabled = true,
     console_instance = nil,
+
+    -- Diagnostics. native_line_count_max is the peak size the native buffer has
+    -- reached; if it plateaus while last_tail_line keeps changing, the buffer is
+    -- bounded and rolling underneath the read position.
+    native_line_count = 0,
+    native_line_count_max = 0,
+    last_tail_line = "",
+    polls = 0,
+    lines_consumed = 0,
+    lines_ingested = 0,
+    lines_suppressed = 0,
+    resets = 0,
+    stall_polls = 0,
+    stalled = false,
 
     extract_timestamp = nil,
     extract_category = nil,
@@ -488,6 +503,51 @@ local function add_entry_from_parsed(parsed, extra_metadata)
     )
 end
 
+--- Adds a reader entry to the console, if one is attached
+-- @param level string Log level
+-- @param message string Message text
+local function report(level, message)
+    if state.console_instance and state.console_instance.add_entry then
+        state.console_instance:add_entry(level, "ConsoleReader", message)
+    end
+end
+
+--- Tracks whether the reader has stopped making progress
+-- A stall is new content in the native buffer with no lines consumed. Backlog
+-- cannot detect it: once the buffer is at capacity the observed count and the
+-- read position pin at the same value, so the two agree while nothing is read.
+-- Comparing the last line instead spots the buffer rolling underneath us.
+-- @param tail_changed boolean Whether the final native line differs from last poll
+-- @param consumed number Lines consumed this poll
+-- @param current_count number Lines currently visible in the native buffer
+local function update_stall_state(tail_changed, consumed, current_count)
+    if consumed > 0 then
+        if state.stalled then
+            state.stalled = false
+            report("INFO", string.format(
+                "Reader resumed after %d stalled poll(s)", state.stall_polls))
+        end
+        state.stall_polls = 0
+        return
+    end
+
+    if not tail_changed or state.stalled then
+        return
+    end
+
+    state.stall_polls = state.stall_polls + 1
+    if state.stall_polls < STALL_POLL_THRESHOLD then
+        return
+    end
+
+    state.stalled = true
+    report("WARN", string.format(
+        "Reader stalled: the native console is still producing lines but the read "
+        .. "position is pinned at %d of %d. %d line(s) captured so far. Clearing the "
+        .. "console resets the reader.",
+        state.last_known_line_count, current_count, state.lines_consumed))
+end
+
 --- Processes new console lines from polling
 local function process_console_lines()
     local lines = get_console_lines()
@@ -496,13 +556,21 @@ local function process_console_lines()
     end
 
     local current_count = #lines
-    local current_time = now_ms()
+    local tail_line = current_count > 0 and lines[current_count] or ""
+    local tail_changed = tail_line ~= state.last_tail_line
+
+    state.last_tail_line = tail_line
+    state.polls = state.polls + 1
+    state.native_line_count = current_count
+    if current_count > state.native_line_count_max then
+        state.native_line_count_max = current_count
+    end
 
     if current_count < state.last_known_line_count then
-        if state.console_instance and state.console_instance.add_entry then
-            state.console_instance:add_entry("DEBUG", "ConsoleReader",
-                "Native console was cleared externally")
-        end
+        state.resets = state.resets + 1
+        report("DEBUG", string.format(
+            "Native console was cleared externally, resetting read position from %d",
+            state.last_known_line_count))
         state.seen_line_hashes = {}
         state.hash_count = 0
         state.last_known_line_count = 0
@@ -512,13 +580,16 @@ local function process_console_lines()
     local end_index = math.min(current_count, start_index + MAX_LINES_PER_POLL - 1)
 
     local added_count = 0
+    local suppressed_count = 0
     for i = start_index, end_index do
         local line = lines[i]
         if line then
             local parsed = parse_line(line)
             if parsed then
                 local hash = compute_entry_hash(parsed.level, parsed.category, parsed.message)
-                if not is_hash_seen(hash) then
+                if is_hash_seen(hash) then
+                    suppressed_count = suppressed_count + 1
+                else
                     add_entry_from_parsed(parsed)
                     added_count = added_count + 1
                 end
@@ -526,7 +597,17 @@ local function process_console_lines()
         end
     end
 
+    local consumed = end_index - start_index + 1
+    if consumed < 0 then
+        consumed = 0
+    end
+
+    state.lines_consumed = state.lines_consumed + consumed
+    state.lines_ingested = state.lines_ingested + added_count
+    state.lines_suppressed = state.lines_suppressed + suppressed_count
     state.last_known_line_count = end_index
+
+    update_stall_state(tail_changed, consumed, current_count)
 end
 
 -- ============================================================================
@@ -572,6 +653,15 @@ function M.perform_backfill()
 
     state.last_known_line_count = #lines
     state.backfill_completed = true
+
+    -- Seed the diagnostics so the first poll compares against what backfill
+    -- actually saw, rather than reporting a spurious change.
+    state.native_line_count = #lines
+    if #lines > state.native_line_count_max then
+        state.native_line_count_max = #lines
+    end
+    state.last_tail_line = lines[#lines] or ""
+    state.lines_consumed = state.lines_consumed + #lines
 
     state.console_instance:add_entry("DEBUG", "ConsoleReader",
         string.format("Backfilled %d pre-existing console lines", #lines))
@@ -644,6 +734,13 @@ function M.clear_native_console()
     state.seen_line_hashes = {}
     state.hash_count = 0
     state.last_known_line_count = 0
+
+    -- Position state only. Cumulative counters are session diagnostics and
+    -- would hide how much a stall cost if a clear wiped them.
+    state.native_line_count = 0
+    state.last_tail_line = ""
+    state.stall_polls = 0
+    state.stalled = false
 end
 
 --- Enables or disables polling
@@ -661,13 +758,47 @@ end
 --- Gets statistics about the ConsoleReader
 -- @return table Statistics table
 function M.get_stats()
+    local backlog = state.native_line_count - state.last_known_line_count
+    if backlog < 0 then
+        backlog = 0
+    end
+
     return {
         enabled = state.is_enabled,
         backfill_completed = state.backfill_completed,
         tracked_hashes = state.hash_count,
         last_known_line_count = state.last_known_line_count,
         poll_interval_ms = state.poll_interval_ms,
+        native_line_count = state.native_line_count,
+        native_line_count_max = state.native_line_count_max,
+        backlog = backlog,
+        polls = state.polls,
+        lines_consumed = state.lines_consumed,
+        lines_ingested = state.lines_ingested,
+        lines_suppressed = state.lines_suppressed,
+        resets = state.resets,
+        stalled = state.stalled,
     }
+end
+
+--- Formats reader state for a diagnostics tooltip
+-- @return string Multi-line summary
+function M.get_stats_text()
+    local stats = M.get_stats()
+
+    return table.concat({
+        string.format("Reader: %s%s", stats.enabled and "polling" or "disabled",
+            stats.stalled and " (STALLED)" or ""),
+        string.format("Native buffer: %d now, %d peak", stats.native_line_count,
+            stats.native_line_count_max),
+        string.format("Read position: %d, backlog %d", stats.last_known_line_count,
+            stats.backlog),
+        string.format("Polls: %d every %dms", stats.polls, stats.poll_interval_ms),
+        string.format("Lines consumed: %d (ingested %d, suppressed %d)",
+            stats.lines_consumed, stats.lines_ingested, stats.lines_suppressed),
+        string.format("Tracked hashes: %d, external clears: %d", stats.tracked_hashes,
+            stats.resets),
+    }, "\n")
 end
 
 --- Resets all state (for testing or reload)
@@ -678,6 +809,17 @@ function M.reset()
     state.backfill_completed = false
     state.last_poll_time = 0
     state.last_cleanup_time = 0
+
+    state.native_line_count = 0
+    state.native_line_count_max = 0
+    state.last_tail_line = ""
+    state.polls = 0
+    state.lines_consumed = 0
+    state.lines_ingested = 0
+    state.lines_suppressed = 0
+    state.resets = 0
+    state.stall_polls = 0
+    state.stalled = false
 end
 
 -- Export module
