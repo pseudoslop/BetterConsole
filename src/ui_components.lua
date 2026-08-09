@@ -304,7 +304,7 @@ local function render_search_chip(window)
         return
     end
 
-    if Theme.filter_chip(string.format("search: '%s' ??", window.filters.search), "search") then
+    if Theme.filter_chip(string.format("search: '%s' ×", window.filters.search), "search") then
         window.filters.search = ""
         window.search.text = ""
         window.search.pending_text = ""
@@ -320,7 +320,7 @@ end
 local function render_level_chips(window, enabled_levels)
     ensure_dependencies()
     for _, level in ipairs(enabled_levels) do
-        if Theme.filter_chip(string.format("%s ??", level), "level") then
+        if Theme.filter_chip(string.format("%s ×", level), "level") then
             if #enabled_levels == SINGLE_LEVEL_COUNT then
                 clear_all_levels(window)
             else
@@ -353,7 +353,7 @@ end
 local function render_category_chips(window, enabled_categories)
     ensure_dependencies()
     for _, cat in ipairs(enabled_categories) do
-        if Theme.filter_chip(string.format("%s ??", cat), "category") then
+        if Theme.filter_chip(string.format("%s ×", cat), "category") then
             window.filters.categories[cat] = nil
             apply_filter_change(window, false)
         end
@@ -375,7 +375,7 @@ end
 local function render_excluded_level_chips(window, excluded_levels)
     ensure_dependencies()
     for _, level in ipairs(excluded_levels) do
-        if Theme.filter_chip(string.format("X %s ??", level), "exclude") then
+        if Theme.filter_chip(string.format("X %s ×", level), "exclude") then
             window.filters.exclude_levels[level] = nil
             apply_filter_change(window, false)
         end
@@ -397,7 +397,7 @@ end
 local function render_excluded_category_chips(window, excluded_categories)
     ensure_dependencies()
     for _, cat in ipairs(excluded_categories) do
-        if Theme.filter_chip(string.format("X %s ??", cat), "exclude") then
+        if Theme.filter_chip(string.format("X %s ×", cat), "exclude") then
             window.filters.exclude_categories[cat] = nil
             apply_filter_change(window, false)
         end
@@ -1274,7 +1274,7 @@ local function render_selectable_filter(label, is_included, is_excluded, tooltip
 
     local display_label = label
     if is_excluded then
-        display_label = "?? " .. label
+        display_label = "× " .. label
         GUI:PushStyleColor(GUI.Col_Text, unpack(Theme.Colors.CHIP_EXCLUDE_TEXT))
     end
 
@@ -1406,7 +1406,7 @@ M.render = function(window)
             else
 
                 if Theme.colored_button(
-                    '"' .. window.filters.search .. '" ??##search',
+                    '"' .. window.filters.search .. '" ×##search',
                     {
                         button = Theme.Colors.CHIP_SEARCH_ALT,
                         hover = Theme.Colors.CHIP_SEARCH_HOVER,
