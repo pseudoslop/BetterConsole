@@ -28,6 +28,7 @@ local M = {}
 local POLL_INTERVAL_MS = 150
 local HASH_EXPIRY_MS = 5000
 local MAX_TRACKED_HASHES = 10000
+local HASH_EVICTION_TARGET = math.floor(MAX_TRACKED_HASHES * 0.8)
 local MS_PER_SECOND = 1000
 local MAX_LINES_PER_POLL = 100
 local CLEANUP_INTERVAL_MS = 1000
@@ -141,6 +142,43 @@ local function is_hash_seen(hash)
     return state.seen_line_hashes[hash] ~= nil
 end
 
+--- Evicts oldest hashes until the tracked count is at or below target_count
+-- Defined ahead of its caller: a local is only in scope after its declaration,
+-- so calling it earlier in the file resolves to a global and fails at runtime.
+-- Sorts bare timestamps rather than hash records so the sort uses the native
+-- comparator; this runs on the draw thread over up to MAX_TRACKED_HASHES keys.
+-- @param target_count number Number of hashes to keep
+local function evict_oldest_hashes(target_count)
+    local remove_count = state.hash_count - target_count
+    if remove_count <= 0 then
+        return
+    end
+
+    local timestamps = {}
+    for _, timestamp in pairs(state.seen_line_hashes) do
+        timestamps[#timestamps + 1] = timestamp
+    end
+
+    table.sort(timestamps)
+
+    local cutoff = timestamps[remove_count]
+    if not cutoff then
+        return
+    end
+
+    local removed = 0
+    for hash, timestamp in pairs(state.seen_line_hashes) do
+        if removed >= remove_count then
+            break
+        end
+        if timestamp <= cutoff then
+            state.seen_line_hashes[hash] = nil
+            state.hash_count = state.hash_count - 1
+            removed = removed + 1
+        end
+    end
+end
+
 --- Removes expired hashes from the tracking table
 -- @param current_time number Current timestamp in milliseconds
 local function cleanup_expired_hashes(current_time)
@@ -159,28 +197,7 @@ local function cleanup_expired_hashes(current_time)
     end
 
     if state.hash_count > MAX_TRACKED_HASHES then
-        evict_oldest_hashes(MAX_TRACKED_HASHES * 0.8)
-    end
-end
-
---- Evicts oldest hashes until count is below target
--- @param target_count number Target number of hashes to keep
-local function evict_oldest_hashes(target_count)
-    local sorted = {}
-    for hash, timestamp in pairs(state.seen_line_hashes) do
-        sorted[#sorted + 1] = { hash = hash, timestamp = timestamp }
-    end
-
-    table.sort(sorted, function(a, b)
-        return a.timestamp < b.timestamp
-    end)
-
-    local remove_count = state.hash_count - target_count
-    for i = 1, remove_count do
-        if sorted[i] then
-            state.seen_line_hashes[sorted[i].hash] = nil
-            state.hash_count = state.hash_count - 1
-        end
+        evict_oldest_hashes(HASH_EVICTION_TARGET)
     end
 end
 
