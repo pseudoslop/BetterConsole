@@ -117,96 +117,35 @@ end
 M.ExecuteCodeCommand = {}
 setmetatable(M.ExecuteCodeCommand, { __index = Command })
 
-local function create_sandbox()
-    local sandbox = {
-        assert = assert,
-        ipairs = ipairs,
-        next = next,
-        pairs = pairs,
-        pcall = pcall,
-        select = select,
-        tonumber = tonumber,
-        tostring = tostring,
-        type = type,
-        unpack = unpack,
-        xpcall = xpcall,
+-- Compiles a command, preferring the expression form so a bare "Player.pos"
+-- reports its value instead of failing to parse as a statement.
+-- @param command string: Source typed into the console
+-- @return function|nil, string|nil: Compiled chunk, or nil and the syntax error
+local function compile_command(command)
+    local chunk = loadstring("return " .. command, "BetterConsole")
+    if chunk then
+        return chunk, nil
+    end
 
-        math = {
-            abs = math.abs,
-            acos = math.acos,
-            asin = math.asin,
-            atan = math.atan,
-            atan2 = math.atan2,
-            ceil = math.ceil,
-            cos = math.cos,
-            cosh = math.cosh,
-            deg = math.deg,
-            exp = math.exp,
-            floor = math.floor,
-            fmod = math.fmod,
-            frexp = math.frexp,
-            huge = math.huge,
-            ldexp = math.ldexp,
-            log = math.log,
-            log10 = math.log10,
-            max = math.max,
-            min = math.min,
-            modf = math.modf,
-            pi = math.pi,
-            pow = math.pow,
-            rad = math.rad,
-            random = math.random,
-            sin = math.sin,
-            sinh = math.sinh,
-            sqrt = math.sqrt,
-            tan = math.tan,
-            tanh = math.tanh
-        },
+    local statement, err = loadstring(command, "BetterConsole")
+    if statement then
+        return statement, nil
+    end
 
-        string = {
-            byte = string.byte,
-            char = string.char,
-            find = string.find,
-            format = string.format,
-            gmatch = string.gmatch,
-            gsub = string.gsub,
-            len = string.len,
-            lower = string.lower,
-            match = string.match,
-            rep = string.rep,
-            reverse = string.reverse,
-            sub = string.sub,
-            upper = string.upper
-        },
+    return nil, err
+end
 
-        table = {
-            concat = table.concat,
-            insert = table.insert,
-            maxn = table.maxn,
-            remove = table.remove,
-            sort = table.sort
-        },
-
-        loadstring = nil,
-        load = nil,
-        loadfile = nil,
-        dofile = nil,
-        require = nil,
-        getfenv = nil,
-        setfenv = nil,
-        rawget = nil,
-        rawset = nil,
-        rawequal = nil,
-
-        io = nil,
-        os = nil,
-        debug = nil,
-
-        _G = nil,
-        package = nil
-    }
-
-    return sandbox
+-- Renders one returned value, expanding tables rather than showing an address
+-- @param value any: Value returned by the command
+-- @return string: Display form
+local function describe_result(value)
+    if type(value) == "table" then
+        local Strx = BetterConsole.Strx
+        if Strx and Strx.serialize_value then
+            return Strx.serialize_value(value)
+        end
+    end
+    return tostring(value)
 end
 
 function M.ExecuteCodeCommand:execute(context)
@@ -218,42 +157,37 @@ function M.ExecuteCodeCommand:execute(context)
 
     context:add_entry("INFO", "Console", "Code: " .. command)
 
-    local sandbox = create_sandbox()
-    local func
-    local load_err
-
-    if type(loadstring) == "function" then
-        func, load_err = loadstring(command)
-        if func and type(setfenv) == "function" then
-            setfenv(func, sandbox)
-        end
-    elseif type(load) == "function" then
-        func, load_err = load(command, "BetterConsoleCommand", "t", sandbox)
-    end
-
+    local func, load_err = compile_command(command)
     if not func then
-        if load_err then
-            context:add_entry("ERROR", "Console", "Syntax error: " .. tostring(load_err))
-        else
-            context:add_entry("ERROR", "Console", "Failed to compile command")
-        end
+        context:add_entry("ERROR", "Console", "Syntax error: " .. tostring(load_err or "failed to compile command"))
         return false, load_err
     end
 
-    local ErrorHandler = BetterConsole.ErrorHandler
-    local ok, result = ErrorHandler.try_catch(func, "execute_code")
+    -- Runs in the global environment, the same one Minion's own console uses.
+    -- The previous sandbox blocked every framework global, which left the box
+    -- able to do arithmetic and nothing else, while protecting nothing: the
+    -- native console offers unrestricted Lua in this very state.
+    -- pcall rather than ErrorHandler.try_catch, because try_catch reports
+    -- through d() and the failure would then be logged twice.
+    local returned = { pcall(func) }
+    local ok = table.remove(returned, 1)
+
     if not ok then
-        context:add_entry("ERROR", "Console", "Runtime error: " .. tostring(result))
-        return false, result
+        context:add_entry("ERROR", "Console", "Runtime error: " .. tostring(returned[1]))
+        return false, returned[1]
     end
 
-    if result ~= nil and result ~= true then
-        context:add_entry("INFO", "Console", "Result: " .. tostring(result))
-    elseif result == nil then
+    if #returned == 0 then
         context:add_entry("INFO", "Console", "Code executed successfully")
+    else
+        local parts = {}
+        for index = 1, #returned do
+            parts[index] = describe_result(returned[index])
+        end
+        context:add_entry("INFO", "Console", "Result: " .. table.concat(parts, ", "))
     end
 
-    return true, result
+    return true, returned[1]
 end
 
 M.ExportCommand = {}
