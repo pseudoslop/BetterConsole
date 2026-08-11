@@ -1333,6 +1333,50 @@ local FOLLOW_RELEASE_GAP = 8
 -- steadily growing log still re-pins 30 times a second.
 local FOLLOW_PIN_INTERVAL_FRAMES = 2
 
+-- Diagnostic capture, off unless switched on from the console. Records what the
+-- binding actually reports each frame, since the ordering of scroll requests
+-- against wheel input cannot be established from outside the game.
+local scroll_trace = nil
+local SCROLL_TRACE_FRAMES = 50
+
+--- Records one frame of scroll state when tracing is enabled
+local function trace_scroll(scroll_y, scroll_max, moved_up, sticky, pinning)
+    if not scroll_trace then
+        return
+    end
+
+    if #scroll_trace >= SCROLL_TRACE_FRAMES then
+        table.remove(scroll_trace, 1)
+    end
+
+    scroll_trace[#scroll_trace + 1] = string.format("%9.0f %9.0f %7.0f   %s      %s      %s",
+        scroll_y, scroll_max, scroll_max - scroll_y,
+        pinning and "Y" or ".", sticky and "Y" or ".", moved_up and "Y" or ".")
+end
+
+--- Turns scroll tracing on or off
+-- @param enabled boolean Whether to capture
+-- @return string Confirmation for the console
+function M.debug_scroll(enabled)
+    scroll_trace = enabled and {} or nil
+    return enabled and "scroll trace ON, scroll the log then call dump_scroll()"
+        or "scroll trace off"
+end
+
+--- Returns the captured frames as text
+-- @return string Trace table, oldest first
+function M.dump_scroll()
+    if not scroll_trace or #scroll_trace == 0 then
+        return "nothing captured; run BetterConsole.VirtualScroll.debug_scroll(true) first"
+    end
+
+    local out = { "", " scroll_y scroll_max     gap   pin  sticky  movedup" }
+    for _, row in ipairs(scroll_trace) do
+        out[#out + 1] = row
+    end
+    return table.concat(out, "\n")
+end
+
 -- Any offset past the real maximum; ImGui clamps a scroll request to the
 -- content, so this reaches the bottom without needing to know where it is.
 local SCROLL_TO_END = 1e7
@@ -1487,6 +1531,9 @@ function M.update(state, window, total_entries, available_height)
             or math.abs(scroll_max - state.last_pinned_max) > SCROLL_TOLERANCE
         local pinning = state.force_pin
             or (bottom_moved and state.frames_since_pin >= FOLLOW_PIN_INTERVAL_FRAMES)
+
+        trace_scroll(scroll_y, scroll_max, moved_up, state.sticky, pinning)
+
         if pinning then
             -- Overshoot deliberately. ImGui clamps a scroll request against the
             -- content laid out in the frame it was issued, so this lands on the
@@ -1514,6 +1561,8 @@ function M.update(state, window, total_entries, available_height)
             return visible_start, total_entries
         end
     end
+
+    trace_scroll(scroll_y, scroll_max, moved_up, state.sticky, false)
 
     if math.abs(scroll_y - state.last_scroll_y) > SCROLL_TOLERANCE then
         state.last_scroll_y = scroll_y
