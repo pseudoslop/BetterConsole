@@ -1414,6 +1414,7 @@ function M.create()
         last_total_entries = -1,
         force_pin = true,
         frames_since_pin = 0,
+        released_by_user = false,
         last_pinned_max = -1,
         row_height = BetterConsole.Models.Constants.Performance.VIRTUAL_SCROLL_ITEM_HEIGHT
     }
@@ -1486,6 +1487,7 @@ function M.update(state, window, total_entries, available_height)
 
     if state.force_follow then
         state.sticky = true
+        state.released_by_user = false
     elseif state.follow_applied then
         -- Give up following only on both signals at once: the view moved up,
         -- and it now sits clear of the bottom. Either alone produces false
@@ -1494,6 +1496,22 @@ function M.update(state, window, total_entries, available_height)
         -- downward with no user involvement, and growth below the viewport
         -- opens a gap that closes again as soon as the pin is applied.
         state.sticky = not (moved_up and scroll_y < scroll_max - FOLLOW_RELEASE_GAP)
+        if not state.sticky then
+            state.released_by_user = true
+        end
+    elseif state.released_by_user then
+        -- Once released, re-engage only on a deliberate move toward the bottom.
+        -- Merely arriving there is not the user asking to follow again: giving
+        -- up following changes which rows are drawn, which changes the content
+        -- height, and ImGui clamps the offset to the new smaller maximum. That
+        -- clamp lands exactly at the bottom, so an arrival test re-engaged on
+        -- the very next frame and every release bounced straight back. A clamp
+        -- moves the view up; only the user moves it down.
+        local moved_down = scroll_y > state.last_observed_scroll + SCROLL_TOLERANCE
+        state.sticky = moved_down and scroll_y >= scroll_max - state.auto_scroll_threshold
+        if state.sticky then
+            state.released_by_user = false
+        end
     else
         state.sticky = scroll_y >= scroll_max - state.auto_scroll_threshold
     end
@@ -1555,22 +1573,20 @@ function M.update(state, window, total_entries, available_height)
             state.last_pinned_max = scroll_max
         end
 
-        -- The tail is only the right thing to draw if the view is going to be
-        -- at the bottom. Drawing it while parked elsewhere puts the newest rows
-        -- below an empty viewport, which is the blank pane this replaced.
-        if pinning or scroll_y >= scroll_max - state.auto_scroll_threshold then
-            local per_screen = math.ceil(available_height / row_height(state))
-                + state.buffer_size * ESTIMATED_HEIGHT_MULTIPLIER
-            local visible_start = math.max(INITIAL_INDEX, total_entries - per_screen + INITIAL_INDEX)
+        -- Draw the tail rather than deriving the range from scroll_y, which
+        -- still refers to the previous frame's bottom and, over rows of uneven
+        -- height, lands short of the last entry.
+        local per_screen = math.ceil(available_height / row_height(state))
+            + state.buffer_size * ESTIMATED_HEIGHT_MULTIPLIER
+        local visible_start = math.max(INITIAL_INDEX, total_entries - per_screen + INITIAL_INDEX)
 
-            state.visible_start = visible_start
-            state.visible_end = total_entries
-            state.last_scroll_y = scroll_y
-            state.last_available_height = available_height
-            state.is_dirty = true
+        state.visible_start = visible_start
+        state.visible_end = total_entries
+        state.last_scroll_y = scroll_y
+        state.last_available_height = available_height
+        state.is_dirty = true
 
-            return visible_start, total_entries
-        end
+        return visible_start, total_entries
     end
 
     trace_scroll(scroll_y, scroll_max, moved_up, state.sticky, false)
