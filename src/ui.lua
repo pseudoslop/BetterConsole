@@ -1337,21 +1337,32 @@ local FOLLOW_PIN_INTERVAL_FRAMES = 2
 -- binding actually reports each frame, since the ordering of scroll requests
 -- against wheel input cannot be established from outside the game.
 local scroll_trace = nil
-local SCROLL_TRACE_FRAMES = 50
+local SCROLL_TRACE_CHANGES = 60
 
---- Records one frame of scroll state when tracing is enabled
+--- Records a frame of scroll state when tracing is enabled
+-- Consecutive identical frames collapse into a repeat count. A log at rest
+-- produces the same row every frame, and keeping those flushes the frames that
+-- matter out of the buffer long before it can be read.
 local function trace_scroll(scroll_y, scroll_max, moved_up, sticky, pinning)
     if not scroll_trace then
         return
     end
 
-    if #scroll_trace >= SCROLL_TRACE_FRAMES then
+    local row = string.format("%9.0f %9.0f %7.0f   %s      %s      %s",
+        scroll_y, scroll_max, scroll_max - scroll_y,
+        pinning and "Y" or ".", sticky and "Y" or ".", moved_up and "Y" or ".")
+
+    local last = scroll_trace[#scroll_trace]
+    if last and last.row == row then
+        last.count = last.count + 1
+        return
+    end
+
+    if #scroll_trace >= SCROLL_TRACE_CHANGES then
         table.remove(scroll_trace, 1)
     end
 
-    scroll_trace[#scroll_trace + 1] = string.format("%9.0f %9.0f %7.0f   %s      %s      %s",
-        scroll_y, scroll_max, scroll_max - scroll_y,
-        pinning and "Y" or ".", sticky and "Y" or ".", moved_up and "Y" or ".")
+    scroll_trace[#scroll_trace + 1] = { row = row, count = 1 }
 end
 
 --- Turns scroll tracing on or off
@@ -1371,8 +1382,8 @@ function M.dump_scroll()
     end
 
     local out = { "", " scroll_y scroll_max     gap   pin  sticky  movedup" }
-    for _, row in ipairs(scroll_trace) do
-        out[#out + 1] = row
+    for _, entry in ipairs(scroll_trace) do
+        out[#out + 1] = entry.row .. (entry.count > 1 and ("   x" .. entry.count) or "")
     end
     return table.concat(out, "\n")
 end
