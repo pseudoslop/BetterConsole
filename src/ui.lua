@@ -1326,6 +1326,13 @@ local ROW_HEIGHT_SMOOTHING = 0.1
 -- the user's doing.
 local FOLLOW_RELEASE_GAP = 8
 
+-- Minimum frames between pins. With a request outstanding every frame the
+-- wheel can never win, because the request resolves after wheel input and puts
+-- the view back before the movement is observed. Leaving gaps guarantees frames
+-- where nothing is queued, so a scroll survives long enough to be seen. At 2 a
+-- steadily growing log still re-pins 30 times a second.
+local FOLLOW_PIN_INTERVAL_FRAMES = 2
+
 -- Any offset past the real maximum; ImGui clamps a scroll request to the
 -- content, so this reaches the bottom without needing to know where it is.
 local SCROLL_TO_END = 1e7
@@ -1349,6 +1356,10 @@ function M.create()
         follow_applied = false,
         force_follow = false,
         last_observed_scroll = INITIAL_TIME,
+        last_total_entries = -1,
+        force_pin = true,
+        frames_since_pin = 0,
+        last_pinned_max = -1,
         row_height = BetterConsole.Models.Constants.Performance.VIRTUAL_SCROLL_ITEM_HEIGHT
     }
 end
@@ -1397,6 +1408,7 @@ end
 function M.request_follow(state)
     if state then
         state.force_follow = true
+        state.force_pin = true
         state.sticky = true
     end
 end
@@ -1437,6 +1449,10 @@ function M.update(state, window, total_entries, available_height)
     local following = state.sticky and follow_enabled(window)
     state.force_follow = false
 
+    if following and not state.follow_applied then
+        state.force_pin = true
+    end
+
     if following ~= state.follow_applied then
         -- A transition either way changes which rows belong on screen, so the
         -- cached range must not survive it. Leaving is_dirty clear here is what
@@ -1452,25 +1468,51 @@ function M.update(state, window, total_entries, available_height)
         state.is_dirty = true
     end
 
+    local entries_changed = total_entries ~= state.last_total_entries
+    state.last_total_entries = total_entries
+    state.frames_since_pin = state.frames_since_pin + 1
+
     if following then
-        -- Overshoot deliberately. ImGui clamps a scroll request against the
-        -- content laid out in the frame it was issued, so this lands on the
-        -- true bottom without depending on the row-height estimate. The tail is
-        -- returned directly rather than derived from scroll_y, which still
-        -- refers to the previous frame's bottom.
-        GUI:SetScrollY(SCROLL_TO_END)
+        -- Only pin when there is something new to follow. Re-pinning on every
+        -- frame means a request is always outstanding, and that request is
+        -- resolved after wheel input is applied, so it puts the view back
+        -- before the movement can be observed and the user cannot break away.
+        -- On an idle log this now touches the scroll position not at all.
+        -- Pin when the bottom itself has moved, not merely when entries
+        -- arrive. Content also grows as the row-height estimate converges, and
+        -- keying on entry count alone left the view stranded partway up: it
+        -- pinned once, the content then got taller underneath it, and nothing
+        -- ever pinned again because no new entries had arrived.
+        local bottom_moved = entries_changed
+            or math.abs(scroll_max - state.last_pinned_max) > SCROLL_TOLERANCE
+        local pinning = state.force_pin
+            or (bottom_moved and state.frames_since_pin >= FOLLOW_PIN_INTERVAL_FRAMES)
+        if pinning then
+            -- Overshoot deliberately. ImGui clamps a scroll request against the
+            -- content laid out in the frame it was issued, so this lands on the
+            -- true bottom without depending on the row-height estimate.
+            GUI:SetScrollY(SCROLL_TO_END)
+            state.force_pin = false
+            state.frames_since_pin = 0
+            state.last_pinned_max = scroll_max
+        end
 
-        local per_screen = math.ceil(available_height / row_height(state))
-            + state.buffer_size * ESTIMATED_HEIGHT_MULTIPLIER
-        local visible_start = math.max(INITIAL_INDEX, total_entries - per_screen + INITIAL_INDEX)
+        -- The tail is only the right thing to draw if the view is going to be
+        -- at the bottom. Drawing it while parked elsewhere puts the newest rows
+        -- below an empty viewport, which is the blank pane this replaced.
+        if pinning or scroll_y >= scroll_max - state.auto_scroll_threshold then
+            local per_screen = math.ceil(available_height / row_height(state))
+                + state.buffer_size * ESTIMATED_HEIGHT_MULTIPLIER
+            local visible_start = math.max(INITIAL_INDEX, total_entries - per_screen + INITIAL_INDEX)
 
-        state.visible_start = visible_start
-        state.visible_end = total_entries
-        state.last_scroll_y = scroll_y
-        state.last_available_height = available_height
-        state.is_dirty = true
+            state.visible_start = visible_start
+            state.visible_end = total_entries
+            state.last_scroll_y = scroll_y
+            state.last_available_height = available_height
+            state.is_dirty = true
 
-        return visible_start, total_entries
+            return visible_start, total_entries
+        end
     end
 
     if math.abs(scroll_y - state.last_scroll_y) > SCROLL_TOLERANCE then
