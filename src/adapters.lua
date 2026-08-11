@@ -175,7 +175,7 @@ local MEMORY_REPOSITORY_DEFAULT_CAPACITY = 50000
 local DEFAULT_CUSTOM_PRESET_INDEX = (FiltersConstants and FiltersConstants.DEFAULT_CUSTOM_PRESET_INDEX) or 0
 local QUERY_UNBOUNDED_LIMIT = math.huge
 
-local PREFERENCE_DISPLAY_FIELDS = { "timestamp", "level", "category", "metadata", "auto_save_logs" }
+local PREFERENCE_DISPLAY_FIELDS = { "timestamp", "level", "category", "metadata", "auto_save_logs", "follow_log" }
 local PREFERENCE_SEARCH_FIELDS = { "case_sensitive" }
 local PREFERENCE_METADATA_PANEL_FIELDS = { "width_ratio" }
 
@@ -1574,7 +1574,8 @@ function M.create_defaults()
             level = true,
             category = true,
             metadata = true,
-            auto_save_logs = false
+            auto_save_logs = false,
+            follow_log = true
         },
         search = {
             case_sensitive = false

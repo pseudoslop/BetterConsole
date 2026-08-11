@@ -1304,9 +1304,22 @@ local M = {}
 -- Virtual scroll configuration constants
 local INITIAL_VISIBLE_END = 30
 local AUTO_SCROLL_THRESHOLD = 50
+
 local ESTIMATED_HEIGHT_MULTIPLIER = 2
 local BOTTOM_SPACER_HEIGHT = 5
 local SCROLL_TOLERANCE = 1
+
+-- Rows wrap, so their real height is neither uniform nor equal to the
+-- configured VIRTUAL_SCROLL_ITEM_HEIGHT. render_log_entry already measures each
+-- row to size its click target; those measurements feed a smoothed mean here so
+-- the spacers and the viewport share one estimate that tracks reality.
+local MIN_ROW_HEIGHT = 8
+local MAX_ROW_HEIGHT = 600
+local ROW_HEIGHT_SMOOTHING = 0.1
+
+-- Any offset past the real maximum; ImGui clamps a scroll request to the
+-- content, so this reaches the bottom without needing to know where it is.
+local SCROLL_TO_END = 1e7
 
 --- Creates a new virtual scroll state object
 -- @return table New virtual scroll state with default values
@@ -1322,8 +1335,61 @@ function M.create()
         last_available_height = INITIAL_TIME,
         was_at_bottom = false,
         auto_scroll_threshold = AUTO_SCROLL_THRESHOLD,
-        is_dirty = true
+        is_dirty = true,
+        sticky = true,
+        follow_applied = false,
+        force_follow = false,
+        last_observed_scroll = INITIAL_TIME,
+        row_height = BetterConsole.Models.Constants.Performance.VIRTUAL_SCROLL_ITEM_HEIGHT
     }
+end
+
+--- Returns the current estimate of a rendered row's height
+-- @param state table Virtual scroll state object
+-- @return number Height in pixels, never below MIN_ROW_HEIGHT
+local function row_height(state)
+    local height = state.row_height or state.item_height
+    if not height or height < MIN_ROW_HEIGHT then
+        return MIN_ROW_HEIGHT
+    end
+    return height
+end
+
+--- Feeds a measured row height into the running estimate
+-- Called from render_log_entry, which measures each row anyway to size its
+-- click target. Smoothed rather than taken outright, since row heights vary by
+-- an order of magnitude between a short line and a wrapped one.
+-- @param state table Virtual scroll state object
+-- @param height number Measured height of a rendered row
+function M.record_row_height(state, height)
+    if not state or type(height) ~= "number" then
+        return
+    end
+
+    if height < MIN_ROW_HEIGHT or height > MAX_ROW_HEIGHT then
+        return
+    end
+
+    local current = row_height(state)
+    state.row_height = current + (height - current) * ROW_HEIGHT_SMOOTHING
+end
+
+--- Checks whether following the newest entry is switched on for this window
+-- @param window table The window instance
+-- @return boolean True if the follow setting is enabled
+local function follow_enabled(window)
+    return not (window and window.display and window.display.follow_log == false)
+end
+
+--- Requests that the view snap to the newest entry on the next update
+-- Used when the setting is switched on, so it takes effect without the user
+-- having to scroll to the bottom first.
+-- @param state table Virtual scroll state object
+function M.request_follow(state)
+    if state then
+        state.force_follow = true
+        state.sticky = true
+    end
 end
 
 --- Updates virtual scroll viewport based on current scroll position
@@ -1339,14 +1405,63 @@ function M.update(state, window, total_entries, available_height)
     end
 
     local scroll_y = GUI:GetScrollY()
+    local scroll_max = GUI:GetScrollMaxY()
+    local moved_up = scroll_y < state.last_observed_scroll - SCROLL_TOLERANCE
 
-    state.was_at_bottom = M.check_if_at_bottom(state, scroll_y, available_height)
+    if state.force_follow then
+        state.sticky = true
+    elseif state.follow_applied then
+        -- Give up following only on both signals at once: the view moved up,
+        -- and it now sits clear of the bottom. Either alone produces false
+        -- positives. The row-height estimate shifts as different rows scroll
+        -- through, which resizes the spacers and makes ImGui clamp the offset
+        -- downward with no user involvement, and growth below the viewport
+        -- opens a gap that closes again as soon as the pin is applied.
+        state.sticky = not (moved_up and scroll_y < scroll_max - state.auto_scroll_threshold)
+    else
+        state.sticky = scroll_y >= scroll_max - state.auto_scroll_threshold
+    end
 
-    local new_total_height = total_entries * state.item_height
-    local height_changed = state.total_height ~= new_total_height
-    if height_changed then
+    state.last_observed_scroll = scroll_y
+    state.was_at_bottom = state.sticky
+
+    local following = state.sticky and follow_enabled(window)
+    state.force_follow = false
+
+    if following ~= state.follow_applied then
+        -- A transition either way changes which rows belong on screen, so the
+        -- cached range must not survive it. Leaving is_dirty clear here is what
+        -- stranded the tail range in view after following stopped, drawing the
+        -- newest rows far below an empty viewport.
+        state.is_dirty = true
+    end
+    state.follow_applied = following
+
+    local new_total_height = total_entries * row_height(state)
+    if math.abs(state.total_height - new_total_height) > SCROLL_TOLERANCE then
         state.total_height = new_total_height
         state.is_dirty = true
+    end
+
+    if following then
+        -- Overshoot deliberately. ImGui clamps a scroll request against the
+        -- content laid out in the frame it was issued, so this lands on the
+        -- true bottom without depending on the row-height estimate. The tail is
+        -- returned directly rather than derived from scroll_y, which still
+        -- refers to the previous frame's bottom.
+        GUI:SetScrollY(SCROLL_TO_END)
+
+        local per_screen = math.ceil(available_height / row_height(state))
+            + state.buffer_size * ESTIMATED_HEIGHT_MULTIPLIER
+        local visible_start = math.max(INITIAL_INDEX, total_entries - per_screen + INITIAL_INDEX)
+
+        state.visible_start = visible_start
+        state.visible_end = total_entries
+        state.last_scroll_y = scroll_y
+        state.last_available_height = available_height
+        state.is_dirty = true
+
+        return visible_start, total_entries
     end
 
     if math.abs(scroll_y - state.last_scroll_y) > SCROLL_TOLERANCE then
@@ -1357,12 +1472,6 @@ function M.update(state, window, total_entries, available_height)
     if state.last_available_height ~= available_height then
         state.last_available_height = available_height
         state.is_dirty = true
-    end
-
-    if height_changed and state.was_at_bottom then
-        M.scroll_to_bottom(state, available_height)
-        scroll_y = GUI:GetScrollY()
-        state.last_scroll_y = scroll_y
     end
 
     if state.is_dirty then
@@ -1387,11 +1496,22 @@ end
 -- @param total_entries number Total number of entries
 -- @return number, number Start and end indices of visible range (including buffer)
 function M.calculate_viewport(state, scroll_y, available_height, total_entries)
-    local item_height = state.item_height
+    local item_height = row_height(state)
     local buffer_size = state.buffer_size
 
     local visible_start = math.max(INITIAL_INDEX, math.floor(scroll_y / item_height) - buffer_size)
     local visible_end = math.min(total_entries, math.ceil((scroll_y + available_height) / item_height) + buffer_size)
+
+    -- The estimate can still trail a burst of unusually tall rows, and a start
+    -- index past the end of the list renders nothing at all. Show the tail
+    -- rather than an empty pane.
+    if visible_start > total_entries then
+        visible_start = math.max(INITIAL_INDEX, total_entries - buffer_size)
+    end
+
+    if visible_end < visible_start then
+        visible_end = total_entries
+    end
 
     return visible_start, visible_end
 end
@@ -1403,38 +1523,6 @@ function M.mark_dirty(state, reason)
     state.is_dirty = true
 end
 
---- Checks if the scroll position is at or near the bottom
--- @param state table Virtual scroll state object
--- @param scroll_y number Current vertical scroll position
--- @param available_height number Available height for rendering
--- @return boolean True if at bottom (within auto-scroll threshold)
-function M.check_if_at_bottom(state, scroll_y, available_height)
-    if state.total_height == INITIAL_TIME then
-        return true
-    end
-
-    local scroll_max = state.total_height - available_height
-    if scroll_max <= INITIAL_TIME then
-        return true
-    end
-
-    return scroll_y >= scroll_max - state.auto_scroll_threshold
-end
-
---- Scrolls the view to the bottom of the list
--- @param state table Virtual scroll state object
--- @param available_height number Available height for rendering
-function M.scroll_to_bottom(state, available_height)
-    if state.total_height == INITIAL_TIME then
-        return
-    end
-
-    local scroll_max = state.total_height - available_height
-    if scroll_max > INITIAL_TIME then
-        GUI:SetScrollY(scroll_max)
-    end
-end
-
 --- Renders spacers and log entries for virtual scrolling
 -- Renders top spacer for skipped items, visible entries, and bottom spacer
 -- @param window table The window instance
@@ -1443,9 +1531,7 @@ end
 -- @param render_end number End index for rendering entries
 -- @param total_entries number Total number of entries
 function M.render_spacers_with_ranges(window, actual_visible_start, render_start, render_end, total_entries)
-    local item_height = window.virtual_scroll.item_height
-
-    local estimated_item_height = item_height
+    local estimated_item_height = row_height(window.virtual_scroll)
 
     local top_spacer_start = math.min(actual_visible_start, render_start)
     if top_spacer_start > INITIAL_INDEX then

@@ -109,6 +109,17 @@ M.render = function(window)
             end
 
             GUI:Separator()
+            local follow_log_label = create_menu_label(window.display.follow_log, L("menu_follow_log"))
+            if GUI:MenuItem(follow_log_label) then
+                window.display.follow_log = not window.display.follow_log
+                if window.display.follow_log then
+                    BetterConsole.VirtualScroll.request_follow(window.virtual_scroll)
+                end
+                BetterConsole.Prefs.save_user_prefs(window)
+            end
+            TooltipManager.show_on_hover(L("tooltip_follow_log"))
+
+            GUI:Separator()
             local metadata_panel_label = create_menu_label(window.show_metadata_panel, L("menu_metadata_panel"))
             if GUI:MenuItem(metadata_panel_label) then
                 window.show_metadata_panel = not window.show_metadata_panel
@@ -1031,6 +1042,11 @@ M.render_log_entry = function(window, entry, index)
     local line_spacing = GUI:GetTextLineHeightWithSpacing() - GUI:GetTextLineHeight()
     local item_spacing_y = 2
     local item_height = (end_y - start_y) - line_spacing - item_spacing_y
+
+    -- The row has just been laid out, so this is its real height. Feed it back
+    -- so the spacers and viewport stop assuming every row is the configured
+    -- 18px when wrapped rows are several times that.
+    BetterConsole.VirtualScroll.record_row_height(window.virtual_scroll, item_height)
 
     GUI:SetCursorPos(cursor_pos_x, cursor_pos_y)
 

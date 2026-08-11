@@ -118,7 +118,8 @@ function M.new()
             level = true,
             category = true,
             metadata = true,
-            auto_save_logs = false
+            auto_save_logs = false,
+            follow_log = true
         },
 
         search = {

@@ -14,6 +14,8 @@ local Strings = {
         menu_category = "Category",
         menu_metadata = "Metadata",
         menu_metadata_panel = "Metadata Panel",
+        menu_follow_log = "Follow Log",
+        tooltip_follow_log = "Keep the newest entry in view.\nSuspends while you scroll up, resumes when you return to the bottom",
         menu_show_minion_console = "Show Minion Console",
 
         tooltip_auto_save = "Automatically save logs to file on each entry.\n**performance intensive",
@@ -266,6 +268,8 @@ local Strings = {
         menu_category = "分类",
         menu_metadata = "元数据",
         menu_metadata_panel = "元数据面板",
+        menu_follow_log = "跟随日志",
+        tooltip_follow_log = "保持最新条目可见。\n向上滚动时暂停，回到底部时恢复",
         menu_show_minion_console = "显示原始控制台",
 
         tooltip_auto_save = "自动保存每条日志到文件\n**性能密集型操作",
@@ -518,6 +522,8 @@ local Strings = {
         menu_category = "カテゴリ",
         menu_metadata = "メタデータ",
         menu_metadata_panel = "メタデータパネル",
+        menu_follow_log = "ログを追従",
+        tooltip_follow_log = "最新のエントリを常に表示します。\n上にスクロールすると一時停止し、最下部に戻ると再開します",
         menu_show_minion_console = "元のコンソールを表示",
 
         tooltip_auto_save = "ログエントリーごとに自動保存します\n**パフォーマンス負荷が高い",
