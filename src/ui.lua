@@ -1317,6 +1317,15 @@ local MIN_ROW_HEIGHT = 8
 local MAX_ROW_HEIGHT = 600
 local ROW_HEIGHT_SMOOTHING = 0.1
 
+-- How far the view must sit clear of the bottom before following lets go.
+-- Deliberately much smaller than auto_scroll_threshold, which governs the
+-- opposite question of how close counts as back at the bottom. Resuming should
+-- be forgiving; releasing should not, or a single wheel notch fails to escape
+-- the pin and the view snaps back under the user. This can be tight because
+-- ImGui clamping leaves the offset exactly at the maximum, so any real gap is
+-- the user's doing.
+local FOLLOW_RELEASE_GAP = 8
+
 -- Any offset past the real maximum; ImGui clamps a scroll request to the
 -- content, so this reaches the bottom without needing to know where it is.
 local SCROLL_TO_END = 1e7
@@ -1417,7 +1426,7 @@ function M.update(state, window, total_entries, available_height)
         -- through, which resizes the spacers and makes ImGui clamp the offset
         -- downward with no user involvement, and growth below the viewport
         -- opens a gap that closes again as soon as the pin is applied.
-        state.sticky = not (moved_up and scroll_y < scroll_max - state.auto_scroll_threshold)
+        state.sticky = not (moved_up and scroll_y < scroll_max - FOLLOW_RELEASE_GAP)
     else
         state.sticky = scroll_y >= scroll_max - state.auto_scroll_threshold
     end
